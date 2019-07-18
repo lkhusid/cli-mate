@@ -1,0 +1,20 @@
+name: 24game
+version: 0.1.0
+
+authors:
+- lkhusid <lkhusid@gmail.com>
+
+description: |
+  CLI for game 24 solver.
+
+targets:
+  24:
+    main: src/24.cr
+
+crystal: 0.28.0
+
+license: MIT
+
+dependencies:
+  cli-mate:
+    path: ../..

@@ -1,0 +1,16 @@
+name: cli-mate
+version: 0.1.0
+
+authors:
+  - lkhusid <lkhusid@gmail.com>
+
+description: |
+  CLI builder with support for nested commands, common options, command scoped options, built-in help scaffolding, REPL/console mode.
+
+crystal: 0.28.0
+
+license: MIT
+
+targets:
+  cli-mate:
+    main: src/cli-mate.cr
