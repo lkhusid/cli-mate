@@ -58,4 +58,32 @@ class String
       @@with_color ? "#{"\e[7m" if background}#{codex}#{self}" : self
     end
   {% end %}
+
+  def super_split(separator : String, ignore_inside = '"', escape_char = '\\', include_blank = false, strip_ignore_inside = true)
+    return super_split(/#{Regex.escape(separator)}/,
+    ignore_inside: ignore_inside,
+    escape_char: escape_char,
+    include_blank: include_blank,
+    strip_ignore_inside: strip_ignore_inside)
   end
+
+  def super_split(separator : Regex, ignore_inside = '"', escape_char = '\\', include_blank = false, strip_ignore_inside = true) : Array(String)
+    result = [] of String
+    prev = 0
+    ignore_regex = /(?<!#{Regex.escape(escape_char)})#{Regex.escape(ignore_inside)}/
+    ignore_matches = self.scan(ignore_regex)
+    ignore_count = 0
+    self.scan(/#{separator}|$/).each do |m|
+      while ignore_count < ignore_matches.size && ignore_matches[ignore_count].begin.as(Int32) < m.begin.as(Int32)
+        ignore_count += 1
+      end
+      if ignore_count.even?
+        token = self[prev...m.begin.as(Int32)]
+        token = token[1..-2] if token[0] == ignore_inside && token[-1] == ignore_inside && token[-2] != escape_char
+        result << token if include_blank || !token.blank?
+        prev = m.end.as(Int32)
+      end
+    end
+    return result
+  end
+end

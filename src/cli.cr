@@ -64,6 +64,16 @@ module CliMate
       end
     end
 
+    protected def parse_args(args, exclude_double_dash = false)
+      double_dash_index = args.index("--")
+      if double_dash_index
+        double_dash_index += 1 if exclude_double_dash
+        after_double_dash = args[double_dash_index..-1]
+      end
+      @parser.parse(args)
+      @arguments += after_double_dash if after_double_dash
+  end
+
     protected def match_command(args)
       index = -1
       args.map(&.downcase).each_with_index do |a, i|
@@ -83,6 +93,9 @@ module CliMate
     property verbose = 0
     property _sticky = false
 
+    def initialize
+    end
+
     def copy(other)
       {% for name in @type.instance_vars %}
         @{{name}} = other.{{name}}
@@ -96,7 +109,7 @@ module CliMate
 
     private HISTORY_LENGTH = 1000
 
-    getter options = Options.new
+    getter options = CliMate::Options.new
     property sticky_options = false
     getter history_file_name : String = ""
 
@@ -124,8 +137,8 @@ module CliMate
       @parser.separator("\n  Output:")
       @parser.on("--no-color", "No output coloring or font formatting.") { String.with_color = false }
       @parser.on("--silent", "No output.") { silent(true) }
-      @parser.on("-v", "--verbose", "Verbose.") { @options.verbose = 1 }
-      @parser.on("--vv", "--very-verbose", "Very verbose.") { @options.verbose = 2 }
+      @parser.on("--log-info", "INFO level of verbosity.") { @options.verbose = 1 }
+      @parser.on("-v", "--log-debug", "Debug level of verbosity, very verbose.") { @options.verbose = 2 }
 
 
       @parser.separator("\n  Help:")
@@ -159,65 +172,70 @@ module CliMate
       say "#{"Usage:".bold}\n  #{name} [OPTIONS] [[COMMAND [COMMAND_OPTIONS]]...] [ARGUMENTS]\n\n"
       say "#{"Options:".bold}\n#{@parser}\n\n"
       say "#{"Commands:".bold}\n"
-      commands.sort_by(&.name).each do |c|
-        say "  #{c.name.ljust(25)}#{c.desc}"
-        c.show_subcommands_help("  ... ", 25)
+      grouped_cmds = commands.group_by(&.category)
+      grouped_cmds.keys.sort.each do |category|
+        say "  #{category}:"
+        grouped_cmds[category].sort_by(&.name).each do |c|
+          say "    #{c.name.ljust(25)}#{c.desc}"
+          c.show_subcommands_help("  ... ", 25)
+        end
+        say
       end
       say "\n#{footer}\n"
     end
 
     def start(args)
-      @parser.parse(args)
+      begin
+        parse_args(args)
 
-      if @arguments.size > 0
-        begin
-          execute(options, @arguments)
-        rescue e : CliMate::Helpers::ExitException
-          exit(1)
-        end
-      else
-        # REPL mode.
-        @parser.separator("\n  Sticky options:")
-        @parser.on("--sticky-options", "Store current options as defaults for future commands.") { @options._sticky = true }
+        if @arguments.size > 0
+            execute(options, @arguments)
+        else
+          # REPL mode.
+          @parser.separator("\n  Sticky options:")
+          @parser.on("--sticky-options", "Store current options as defaults for future commands.") { @options._sticky = true }
 
-        @history_file_name = File.expand_path("~/.#{name}_history")
-        LibReadline.read_history(@history_file_name)
-        LibReadline.stifle_history(HISTORY_LENGTH)
-        prompt = "#{"==>".invert} "
-        while input = Readline.readline(prompt, false)
-          next if input.empty?
-          input = input.strip
-          if input.starts_with?("hist")
-            hist_length = LibReadline.history_length
-            hist_length.times do |i|
-              say "#{i + 1}. #{String.new(LibReadline.history_get(i + 1).value.line)}"
-            end
-          else
-            if input[0] == '!'
-              i = input[1..-1].to_i
-              input = "#{String.new(LibReadline.history_get(i).value.line)}" if i < LibReadline.history_length
-            end
-            last_input = LibReadline.history_length == 0 ? "#{input}x" : String.new(LibReadline.history_get(LibReadline.history_length).value.line)
-            LibReadline.add_history(input) unless last_input == input
-            input.split(";").each do |command|
-              t = Time.now
-              cmd = command.gsub(/^time\s+/i, "")
-              orig_options = options.dup
-              begin
-                @parser.parse(cmd.strip.split(/\s+/))
-                execute(@options, arguments)
-              rescue e : CliMate::Helpers::ExitException
-              rescue e : Exception
-                say e.message.as(String).red if e.message
-                say "   #{e.backtrace.join("\n   ")}" if options.verbose > 0
-              ensure
-                @options.copy(orig_options) unless @options._sticky
-                @options._sticky = false
+          @history_file_name = File.expand_path("~/.#{name}_history")
+          LibReadline.read_history(@history_file_name)
+          LibReadline.stifle_history(HISTORY_LENGTH)
+          prompt = "#{"==>".invert} "
+          while input = Readline.readline(prompt, false)
+            next if input.empty?
+            input = input.strip
+            if input.starts_with?("hist")
+              hist_length = LibReadline.history_length
+              hist_length.times do |i|
+                say "#{i + 1}. #{String.new(LibReadline.history_get(i + 1).value.line)}"
               end
-              say "Done in #{(Time.now - t).total_seconds.to_s.bold} sec" unless cmd == command
+            else
+              if input[0] == '!'
+                i = input[1..-1].to_i
+                input = "#{String.new(LibReadline.history_get(i).value.line)}" if i < LibReadline.history_length
+              end
+              last_input = LibReadline.history_length == 0 ? "#{input}x" : String.new(LibReadline.history_get(LibReadline.history_length).value.line)
+              LibReadline.add_history(input) unless last_input == input
+              input.super_split(";").each do |command|
+                t = Time.now
+                cmd = command.gsub(/^time\s+/i, "")
+                orig_options = options.dup
+                begin
+                  parse_args(cmd.strip.super_split(/\s+/))
+                  execute(@options, arguments)
+                rescue e : CliMate::Helpers::ExitException
+                rescue e : Exception
+                  say e.message.as(String).red if e.message
+                  say "   #{e.backtrace.join("\n   ")}" if options.verbose > 0
+                ensure
+                  @options.copy(orig_options) unless @options._sticky
+                  @options._sticky = false
+                end
+                say "Done in #{(Time.now - t).total_seconds.to_s.bold} sec" unless cmd == command
+              end
             end
           end
         end
+      rescue e : CliMate::Helpers::ExitException
+        exit(1)
       end
     end
 
@@ -242,6 +260,16 @@ module CliMate
 
     @[JSON::Field(ignore: true)]
     protected getter runner : CliMate::Runner
+
+    def category
+      "Main"
+    end
+
+    macro category(text)
+      def category
+        {{text}}
+      end
+    end
 
     def desc
       "#{name} command"
@@ -287,10 +315,7 @@ module CliMate
       @options = opts
       cmd = match_command(args) || (default.blank? ? nil : match_command(args.unshift(default)))
       if cmd
-        if parser
-          @parser.invalid_option { |msg| }
-          @parser.parse(args)
-        end
+        parse_args(args) if parser
         cmd.execute(options, @arguments)
       else
         if parser
@@ -299,7 +324,7 @@ module CliMate
             show_usage
             stop
           end
-          @parser.parse(args)
+          parse_args(args, true)
         end
         if options.verbose > 1
           say "Args: #{@arguments.join(' ')}"
@@ -315,7 +340,7 @@ module CliMate
     end
 
     def show_help
-      say "#{desc}\n"
+      say "#{desc}\n\n"
       show_usage
       if commands.size > 0
         say "\n#{"Sub-Commands:".bold}"
@@ -324,7 +349,7 @@ module CliMate
     end
 
     def show_usage
-      say "#{usage}\n"
+      say "#{usage}\n\n"
       opts_help = @parser.to_s
       say "#{"Options:".bold}\n#{opts_help}" unless opts_help.blank?
     end
@@ -339,6 +364,7 @@ module CliMate
 
   class HelpCommand < Command
     name  "help"
+    category "Built-in General"
     usage "help [COMMAND]"
     desc  "Show general help or for specific command if command specified."
 
@@ -354,6 +380,7 @@ module CliMate
 
   class OptionsCommand < Command
     name  "options"
+    category "Built-in General"
     usage "options"
     desc  "Set (optionally) and show current option values."
 
@@ -368,6 +395,7 @@ module CliMate
   end
 
   class ExitCommand < Command
+    category "Built-in General"
     desc "Exit REPL mode."
 
     def run(opts, args)
