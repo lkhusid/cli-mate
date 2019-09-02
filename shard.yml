@@ -11,6 +11,12 @@ crystal: 0.28.0
 
 license: MIT
 
+
 targets:
   cli-mate:
     main: src/cli-mate.cr
+
+dependencies:
+  fancyline:
+    github: Papierkorb/fancyline
+

@@ -1,23 +1,13 @@
 require "json"
 require "option_parser"
-require "readline"
+require "fancyline"
 require "./helpers"
 
-lib LibReadline
-  struct HistoryEntry
-    line : UInt8*
-    # timestamp : UInt8*
-    # data :  Void*
+class Fancyline::History
+  def ignore?(line : String?)
+    line = line.strip
+    return line[0] == '!' || line.starts_with?("history") || previous_def
   end
-
-  alias HistEntryArray = HistoryEntry*
-
-  fun write_history(file : UInt8*) : Int32
-  fun read_history(file : UInt8*) : Int32
-  fun stifle_history(Int32)
-  fun history_get(Int32) : HistoryEntry*
-  fun history_list : HistEntryArray*
-  $history_length : Int32
 end
 
 module CliMate
@@ -72,7 +62,7 @@ module CliMate
       end
       @parser.parse(args)
       @arguments += after_double_dash if after_double_dash
-  end
+    end
 
     protected def match_command(args)
       index = -1
@@ -132,6 +122,7 @@ module CliMate
     end
 
     def initialize
+      @fancy = Fancyline.new
       parser_options(@parser)
 
       @parser.separator("\n  Output:")
@@ -184,6 +175,16 @@ module CliMate
       say "\n#{footer}\n"
     end
 
+    def history
+      @fancy.history
+    end
+
+    def save_history
+      File.open(@history_file_name, "w") do |io|
+        @fancy.history.save io
+      end
+    end
+
     def start(args)
       begin
         parse_args(args)
@@ -196,46 +197,63 @@ module CliMate
           @parser.on("--sticky-options", "Store current options as defaults for future commands.") { @options._sticky = true }
 
           @history_file_name = File.expand_path("~/.#{name}_history")
-          LibReadline.read_history(@history_file_name)
-          LibReadline.stifle_history(HISTORY_LENGTH)
           prompt = "#{"==>".invert} "
-          while input = Readline.readline(prompt, false)
+          @fancy = Fancyline.new
+          File.open(@history_file_name, "r") {|io| @fancy.history.load io }
+
+          # @fancy.display.add do |ctx, line, yielder|
+          #   line = line.gsub(/^\w+/, &.colorize.mode(:underline))
+          
+          #   # And turn --arguments green
+          #   line = line.gsub(/--?\w+/, &.colorize(:green))
+          
+          #   # Then we call the next middleware with the modified line
+          #   yielder.call ctx, line
+          # end
+
+          @fancy.sub_info.add do |ctx, yielder|
+            lines = yielder.call(ctx)
+            target = self
+            while cmd = target.match_command(ctx.editor.line.split(/\s+/))
+              target = cmd
+            end
+
+            lines += target.usage.split("\n").map(&.colorize.dim.to_s) if target.is_a?(Command)
+            lines
+          end
+
+          while input = @fancy.readline(prompt)
             next if input.empty?
             input = input.strip
-            if input.starts_with?("hist")
-              hist_length = LibReadline.history_length
-              hist_length.times do |i|
-                say "#{i + 1}. #{String.new(LibReadline.history_get(i + 1).value.line)}"
+            if input[0] == '!'
+              i = input[1..-1].to_i
+              if i > 0 && i <= @fancy.history.lines.size.as(Int32)
+                input = @fancy.history.lines[i-1]
+                @fancy.history.add(input) if input
               end
-            else
-              if input[0] == '!'
-                i = input[1..-1].to_i
-                input = "#{String.new(LibReadline.history_get(i).value.line)}" if i < LibReadline.history_length
-              end
-              last_input = LibReadline.history_length == 0 ? "#{input}x" : String.new(LibReadline.history_get(LibReadline.history_length).value.line)
-              LibReadline.add_history(input) unless last_input == input
-              input.super_split(";").each do |command|
-                t = Time.now
-                cmd = command.gsub(/^time\s+/i, "")
-                orig_options = options.dup
-                begin
-                  parse_args(cmd.strip.super_split(/\s+/))
-                  execute(@options, arguments)
-                rescue e : CliMate::Helpers::ExitException
-                rescue e : Exception
-                  say e.message.as(String).red if e.message
-                  say "   #{e.backtrace.join("\n   ")}" if options.verbose > 0
-                ensure
-                  @options.copy(orig_options) unless @options._sticky
-                  @options._sticky = false
-                end
-                say "Done in #{(Time.now - t).total_seconds.to_s.bold} sec" unless cmd == command
-              end
+            end
+            input.super_split(";").each do |command|
+              parse_and_execute(command)
             end
           end
         end
       rescue e : CliMate::Helpers::ExitException
         exit(1)
+      end
+    end
+
+    def parse_and_execute(cmd)
+      orig_options = options.dup
+      begin
+        parse_args(cmd.strip.super_split(/\s+/))
+        execute(@options, arguments)
+      rescue e : CliMate::Helpers::ExitException
+      rescue e : Exception
+        say e.message.as(String).red if e.message
+        say "   #{e.backtrace.join("\n   ")}" if options.verbose > 0
+      ensure
+        @options.copy(orig_options) unless @options._sticky
+        @options._sticky = false
       end
     end
 
@@ -364,7 +382,7 @@ module CliMate
 
   class HelpCommand < Command
     name  "help"
-    category "Built-in General"
+    category "Built-in/General"
     usage "help [COMMAND]"
     desc  "Show general help or for specific command if command specified."
 
@@ -380,7 +398,7 @@ module CliMate
 
   class OptionsCommand < Command
     name  "options"
-    category "Built-in General"
+    category "Built-in/General"
     usage "options"
     desc  "Set (optionally) and show current option values."
 
@@ -394,12 +412,32 @@ module CliMate
     end
   end
 
+  class TimeCommand < Command
+    category "Built-in/General"
+    desc "Time any other command - execute and show duration."
+
+    def run(opts, args)
+      t = Time.now
+      runner.parse_and_execute(args.join(" "))
+      say "Done in #{(Time.now - t).total_seconds.to_s.bold} sec"
+    end
+  end
+
+  class HistoryCommand < Command
+    category "Built-in/General"
+    desc "Show command history."
+
+    def run(opts, args)
+      runner.history.lines.each_with_index {|line, i| say "#{i + 1}. #{line}" }
+    end
+  end
+
   class ExitCommand < Command
-    category "Built-in General"
+    category "Built-in/General"
     desc "Exit REPL mode."
 
     def run(opts, args)
-      LibReadline.write_history(runner.history_file_name)
+      runner.save_history
       exit(0)
     end
   end
