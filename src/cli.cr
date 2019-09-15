@@ -30,6 +30,7 @@ module CliMate
       end
 
       def parser_options(parser)
+        super
         Proc(OptionParser, Void).new {{block.id}}.call(parser)
       end
     end
